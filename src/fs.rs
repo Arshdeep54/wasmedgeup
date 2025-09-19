@@ -1,6 +1,8 @@
 use crate::prelude::*;
 use snafu::ResultExt;
 
+use std::io::Seek;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use tokio::fs;
@@ -14,7 +16,7 @@ pub async fn copy_tree(from_dir: &Path, to_dir: &Path) {
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
-        if !metadata.is_file() {
+        if !metadata.is_file() && !metadata.is_symlink() {
             continue;
         }
 
@@ -41,8 +43,18 @@ pub async fn copy_tree(from_dir: &Path, to_dir: &Path) {
             tracing::warn!(error = %e, directories = %parent.display(), "Failed to create directories");
             continue;
         };
-
-        if let Err(e) = fs::copy(entry.path(), &target_loc).await {
+        if metadata.is_symlink() {
+            if let Ok(target) = std::fs::read_link(entry.path()) {
+                if let Err(e) = symlink(&target, &target_loc) {
+                    tracing::warn!(
+                        error = %e,
+                        entry = %entry.path().display(),
+                        target_loc = %target_loc.display(),
+                        "Failed to create symlink"
+                    );
+                }
+            }
+        } else if let Err(e) = fs::copy(entry.path(), &target_loc).await {
             tracing::warn!(
                 error = %e,
                 entry = %entry.path().display(),
@@ -64,10 +76,7 @@ pub async fn copy_tree(from_dir: &Path, to_dir: &Path) {
 ///
 /// Returns an error if the extraction fails. This could happen if the archive format is unsupported or
 /// if the destination path cannot be created.
-pub async fn extract_archive(mut file: std::fs::File, dest: &Path) -> Result<()> {
-    use std::io::Seek;
-    use tokio::fs;
-
+pub async fn extract_archive(file: &mut std::fs::File, dest: &Path) -> Result<()> {
     fs::create_dir_all(dest).await.inspect_err(
         |e| tracing::error!(error = %e.to_string(), "Failed to create directory during extraction"),
     )?;

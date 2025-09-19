@@ -36,6 +36,11 @@ async fn execute_install_test(version: String, install_dir: PathBuf, tmpdir: Tem
     assert!(install_dir.join("bin/wasmedge.exe").exists());
 }
 
+pub fn setup_test_environment() {
+    let test_home = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", test_home.path());
+}
+
 #[tokio::test]
 async fn test_install_latest_version() {
     let tmpdir = tempdir().unwrap();
@@ -44,6 +49,7 @@ async fn test_install_latest_version() {
     let all_releases = releases::get_all(WASM_EDGE_GIT_URL, ReleasesFilter::Stable).unwrap();
     assert!(!all_releases.is_empty());
 
+    setup_test_environment();
     execute_install_test(all_releases[0].to_string(), install_dir, tmpdir).await;
 }
 
@@ -55,5 +61,6 @@ async fn test_install_prerelease_version() {
     let all_releases = releases::get_all(WASM_EDGE_GIT_URL, ReleasesFilter::All).unwrap();
     assert!(!all_releases.is_empty());
 
+    setup_test_environment();
     execute_install_test(all_releases[0].to_string(), install_dir, tmpdir).await;
 }
