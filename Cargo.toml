@@ -13,7 +13,7 @@ cfg-if = "1.0.4"
 clap = { version = "4.5.51", features = ["derive"] }
 dirs = "6.0.0"
 git2 = { version = "0.20.2", features = ["vendored-libgit2"] }
-indicatif = { version = "0.18.2", features = ["tokio"] }
+indicatif = { version = "0.18.3", features = ["tokio"] }
 reqwest = "0.12.24"
 semver = "1.0.27"
 snafu = "0.8.9"
@@ -29,7 +29,7 @@ hex = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sysinfo = "0.30"
-which = "6"
+which = "8"
 raw-cpuid = "11"
 
 [target.'cfg(unix)'.dependencies]
@@ -43,7 +43,7 @@ nvml-wrapper = "0.11"
 wmi = "0.12"
 
 [target.'cfg(windows)'.dependencies.opencl3]
-version = "0.9"
+version = "0.12"
 optional = true
 
 [features]
