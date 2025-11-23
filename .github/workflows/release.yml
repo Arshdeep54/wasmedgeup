@@ -2,32 +2,33 @@ name: Release
 
 on:
   pull_request:
-    types: [closed]
+    types: [opened, synchronize, reopened, closed]
     branches: [master, master-test]
   workflow_dispatch:
 
 jobs:
   get-tag:
-    if: (github.head_ref == 'knope/release' && github.event.pull_request.merged == true) || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+      - name: Harden the runner
+        uses: step-security/harden-runner@v2.13.2
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-      - run: echo "tag_name=$(gh release list --json 'isDraft,tagName' --jq '.[] | select(.isDraft) | .tagName')" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+
+      - name: Fetch Draft Release Tag
+        id: get-tag
+        run: echo "tag_name=$(gh release list --json 'isDraft,tagName' --jq '.[] | select(.isDraft) | .tagName')" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ github.token }}
-        id: get-tag
 
     outputs:
       tag_name: ${{ steps.get-tag.outputs.tag_name }}
 
   build-artifacts:
     needs: [get-tag]
-    if: needs.get-tag.outputs.tag_name != ''
+    if: github.event_name == 'pull_request' || needs.get-tag.outputs.tag_name != ''
     strategy:
       fail-fast: false
       matrix:
@@ -46,125 +47,102 @@ jobs:
             os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-    env:
-      package_name: wasmedgeup
 
     runs-on: ${{ matrix.os }}
-    name: ${{ matrix.target }}
+    env:
+      BINARY_NAME: wasmedgeup
+
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+      - name: Harden the runner
+        uses: step-security/harden-runner@v2.13.2
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/checkout@v5
 
-      - name: Setup rust toolchain
-        uses: ./.github/actions/setup-rust
+      - name: Install Rust Target
+        uses: dtolnay/rust-toolchain@stable
         with:
-          target: ${{ matrix.target }}
+          targets: ${{ matrix.target }}
 
-      - name: Enable arm64 apt arch (aarch64 gnu)
-        if: ${{ matrix.os == 'ubuntu-latest' && matrix.target == 'aarch64-unknown-linux-gnu' }}
+      - name: Install cross toolchains (Linux only)
+        if: matrix.os == 'ubuntu-latest'
         run: |
-          sudo dpkg --add-architecture arm64
           sudo apt-get update
+          case "${{ matrix.target }}" in
+            aarch64-unknown-linux-gnu)
+              sudo apt-get install -y gcc-aarch64-linux-gnu ;;
+            aarch64-unknown-linux-musl)
+              sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu ;;
+            x86_64-unknown-linux-musl)
+              sudo apt-get install -y musl-tools ;;
+          esac
 
-      - name: Install cross OpenSSL toolchain (aarch64 gnu)
-        if: ${{ matrix.os == 'ubuntu-latest' && matrix.target == 'aarch64-unknown-linux-gnu' }}
-        run: |
-          sudo apt-get install -y \
-            gcc-aarch64-linux-gnu \
-            libssl-dev:arm64
-
-      - name: Configure env for cross pkg-config (aarch64 gnu)
-        if: ${{ matrix.os == 'ubuntu-latest' && matrix.target == 'aarch64-unknown-linux-gnu' }}
-        run: |
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/aarch64-linux-gnu/lib/pkgconfig" >> $GITHUB_ENV
-          echo "OPENSSL_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
-          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-
-      - name: Install musl-tools
-        if: "${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl' }}"
-        run: sudo apt-get install -y musl-tools
-
-      - name: Build
+      - name: Build Release
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Set archive name (non-windows)
-        id: archive
-        run: >
-          echo "archive_name=${{ env.package_name }}-${{ matrix.target }}" >> "$GITHUB_ENV"
+      - name: Package Artifact
+        run: |
+          mkdir artifacts
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            cp target/${{ matrix.target }}/release/${BINARY_NAME}.exe artifacts/
+            zip -r "${BINARY_NAME}-${{ matrix.target }}.zip" artifacts/
+          else
+            cp target/${{ matrix.target }}/release/${BINARY_NAME} artifacts/
+            tar -czvf "${BINARY_NAME}-${{ matrix.target }}.tar.gz" artifacts/
+          fi
 
-      - name: Set archive name (windows)
-        if: "${{ matrix.os == 'windows-latest' }}"
-        shell: pwsh
-        run: >
-          echo "archive_name=${{ env.package_name }}-${{ matrix.target }}"
-           | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Create Archive Folder
-        run: mkdir ${{ env.archive_name }}
-
-      - name: Copy Unix Artifact
-        if: "${{ matrix.os != 'windows-latest' }}"
-        run: cp target/${{ matrix.target }}/release/${{ env.package_name }} ${{ env.archive_name }}
-
-      - name: Copy Windows Artifact
-        if: ${{ matrix.os == 'windows-latest' }}
-        run: cp target/${{ matrix.target }}/release/${{ env.package_name }}.exe ${{ env.archive_name }}
-
-      - name: Create Tar Archive
-        run: tar -czf ${{ env.archive_name }}.tgz ${{ env.archive_name }}
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: ${{ env.archive_name }}.tgz
-          if-no-files-found: error
+          path: "*.tar.gz"
+          if-no-files-found: ignore
+
 
   release:
-    needs: [get-tag, build-artifacts]
+    needs: [build-artifacts, get-tag]
+    if: needs.get-tag.outputs.tag_name != ''
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+      - name: Harden the runner
+        uses: step-security/harden-runner@v2.13.2
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+      - name: Download Built Artifacts
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: true
 
-      - name: Upload artifacts to release
-        run: |
-          cd artifacts
-          gh release upload ${{ needs.get-tag.outputs.tag_name }} ./*
-          gh release edit ${{ needs.get-tag.outputs.tag_name }} --draft=false --latest
+      - name: Upload Assets to Draft Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for file in $(find artifacts -type f); do              
+            gh release upload "${{ needs.get-tag.outputs.tag_name }}" "$file" --clobber
+          done
 
   publish-crate:
     needs: [release]
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master'
+
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+      - name: Harden the runner
+        uses: step-security/harden-runner@v2.13.2
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/checkout@v5
 
       - name: Setup rust toolchain
         uses: ./.github/actions/setup-rust
 
-      - uses: katyo/publish-crate@v2
+      - name: Publish to crates.io
+        uses: katyo/publish-crate@v2
         with:
           registry-token: ${{ secrets.CARGO_TOKEN }}
